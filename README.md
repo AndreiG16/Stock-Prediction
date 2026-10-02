@@ -1,71 +1,88 @@
-# Sales Forecasting — Rossmann Store Sales
+# Stock Movement Classifier
 
-> End-to-end time series forecasting pipeline comparing Moving Average, Prophet, and XGBoost models on real retail sales data.
+> End-to-end ML pipeline that predicts 5-day stock movement (Up / Flat / Down) using 25 technical indicators derived from price and volume data, with optional news sentiment scoring.
 
 ---
 
 ## Problem Statement
 
-Rossmann operates over 3,000 drug stores across 7 European countries. Store managers need reliable 6-week sales forecasts to plan staffing, inventory, and promotions. Inaccurate forecasts lead to overstocking, understaffing, and lost revenue.
+Can technical indicators reliably predict short-term stock movements? This project builds a rigorous ML pipeline to answer that question honestly — including a baseline comparison and an architectural choice (GBM synthetic data) that highlights a key insight about market efficiency.
 
-**Goal:** Predict daily sales for each store, accounting for promotions, school holidays, seasonality, and competition.
+**Goal:** Classify whether a stock will rise >2%, fall >2%, or stay flat over the next 5 trading days.
 
 ---
 
 ## Dataset
 
-- **Source:** [Kaggle — Rossmann Store Sales](https://www.kaggle.com/competitions/rossmann-store-sales/data)
-- **Size:** ~1M rows, 1,115 stores, Jan 2013 – Jul 2015
-- **Key challenge:** Stores vary significantly by type, location, assortment, and promotion strategy
+Prices are simulated using **Geometric Brownian Motion (GBM)**:
 
-**Download instructions:**
-1. Go to the Kaggle link above
-2. Download `train.csv` and `store.csv`
-3. Place both files in the `/data` folder
+```
+S(t) = S(0) × exp((μ − σ²/2)t + σ × W(t))
+```
+
+This is the same stochastic process that underlies **Black-Scholes options pricing**. It produces realistic OHLCV data with log-normal return distributions — and because it is a pure random walk by construction, it makes the evaluation benchmark clear: a model that cannot beat F1 = 0.33 on GBM data is learning nothing.
+
+| Ticker | S₀ | Annual Drift (μ) | Annual Vol (σ) |
+|---|---|---|---|
+| AAPL  | $160 | 25% | 30% |
+| MSFT  | $300 | 22% | 27% |
+| JPM   | $130 | 12% | 28% |
+| GS    | $350 | 10% | 25% |
+| BAC   | $30  |  8% | 32% |
+
+**To use real data:** Install `yfinance` and replace the data loader — the entire pipeline is identical.
+
+- **Size:** ~7,800 rows, 5 tickers, Jan 2018 – Dec 2023
+- **Split:** Train: 2018–2022 (6,371 rows) | Test: 2023 (1,267 rows)
 
 ---
 
-## Approach
+## Features (25 technical indicators, computed from scratch)
 
-Three models trained and compared:
+| Category | Features |
+|---|---|
+| **Trend** | EMA-20, EMA-50, SMA-20, MACD, MACD Signal, MACD Histogram, EMA Cross |
+| **Momentum** | RSI-14, RSI-7, Stochastic %K, Stochastic %D |
+| **Volatility** | Bollinger Upper/Lower Band, BB Width, BB %B, ATR-14 |
+| **Volume** | OBV (On-Balance Volume), Volume Ratio (vs 20-day avg) |
+| **Price** | 1d/5d/10d/20d returns, 20-day rolling volatility, Price vs EMA-20/50 |
 
-| Model | Type | Key Idea |
-|---|---|---|
-| Moving Average | Statistical Baseline | Average of last 14 days — if ML can't beat this, it's useless |
-| Prophet | Additive Decomposition | Automatically handles seasonality and trend changes |
-| XGBoost | Gradient Boosting | Lag features + rolling stats, strongest performer |
+All implemented from scratch using pandas — no external TA library.
 
 ---
 
 ## Results
 
-| Model | MAE | RMSE | MAPE (%) |
-|---|---|---|---|
-| Moving Average | 1,444.28 | 1,892.24 | 23.61% |
-| Prophet | 680.80 | 759.72 | 15.58% |
-| **XGBoost** | **641.03** | **888.57** | **10.16%** |
+| Metric | Score |
+|---|---|
+| **Macro F1** | **0.331** |
+| Down F1      | 0.35 |
+| Flat F1      | 0.35 |
+| Up F1        | 0.29 |
+| Test accuracy | 33% |
+
+**Why F1 ≈ 0.33?** This is the expected result — and it's the point. GBM is a random walk, so no technical indicator can extract signal that isn't there. The Efficient Market Hypothesis (EMH) predicts exactly this. On real market data, you'd expect slightly better — around 0.38–0.45 Macro F1 — because real prices have microstructure, momentum effects, and behavioural anomalies that GBM doesn't model.
 
 ---
 
 ## Project Structure
 
 ```
-sales-forecasting/
-├── data/                   # Place train.csv and store.csv here
-├── notebooks/
-│   └── eda.ipynb           # Exploratory data analysis
+stock-prediction/
+├── data/                   # Cached price CSVs (gitignored, regenerated on first run)
+├── models/                 # Saved model + scaler (gitignored)
+├── plots/                  # Generated charts
 ├── src/
-│   ├── data_loader.py      # Load and merge CSVs
-│   ├── preprocessing.py    # Feature engineering and train/test split
-│   ├── baseline_model.py   # Moving average baseline
-│   ├── prophet_model.py    # Facebook Prophet model
-│   ├── xgboost_model.py    # XGBoost with lag features
-│   ├── evaluate.py         # MAE, RMSE, MAPE + plots
-│   └── train.py            # Main script — runs all models
+│   ├── data_loader.py      # GBM simulator (swap for yfinance in production)
+│   ├── features.py         # 25 technical indicators (pure pandas, no TA library)
+│   ├── labels.py           # Forward return labelling: Up/Flat/Down
+│   ├── preprocessing.py    # Time-aware split + StandardScaler
+│   ├── sentiment.py        # VADER sentiment scorer (FinBERT-ready interface)
+│   ├── model.py            # XGBoost multi-class classifier
+│   ├── evaluate.py         # F1, confusion matrix, confidence distribution plots
+│   └── train.py            # Main pipeline — runs all 8 steps end-to-end
 ├── api/
-│   └── main.py             # FastAPI forecast endpoint
-├── models/                 # Saved model files (git-ignored)
-├── plots/                  # Generated forecast charts
+│   └── main.py             # FastAPI: /predict and /predict/batch endpoints
 ├── requirements.txt
 └── README.md
 ```
@@ -79,51 +96,39 @@ sales-forecasting/
 pip install -r requirements.txt
 ```
 
-### 2. Add data
-Download `train.csv` and `store.csv` from Kaggle and place in `/data`.
-
-### 3. Train all models
+### 2. Train (generates data automatically)
 ```bash
 python -m src.train
 ```
 
-### 4. Start the API
+### 3. Start the API
 ```bash
 uvicorn api.main:app --reload
 ```
 
-### 5. Make a forecast request
+### 4. Make a prediction
 ```bash
-curl -X POST http://localhost:8000/forecast \
+curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
-  -d '{"store_id": 1, "start_date": "2015-06-01", "end_date": "2015-06-30"}'
+  -d '{"ticker": "AAPL", "date": "2023-06-15", "headlines": ["Apple beats earnings expectations"]}'
 ```
 
-API docs available at: `http://localhost:8000/docs`
-
----
-
-## Key Findings
-
-- **Promotions are the #1 predictor** (30% feature importance) — whether a store runs a promotion dominates every other signal including seasonality and store type
-- **XGBoost beats Prophet on average error** (10.2% MAPE vs 15.6%) but Prophet wins on RMSE — XGBoost is more accurate day-to-day, Prophet handles large spikes better
-- **Rolling 28-day average** is the second strongest feature — recent sales history is a better predictor than raw lag values
-- **Both ML models beat the baseline by a large margin** — Moving Average hits 23.6% MAPE, confirming that the added complexity is justified
+API docs: `http://localhost:8000/docs`
 
 ---
 
 ## Key Learnings
 
-- **Time-aware splits matter:** Random train/test splits cause data leakage in time series — always split by date
-- **Lag features are powerful:** Knowing sales from 7/14/28 days ago is the strongest signal for XGBoost
-- **Baseline first:** Always benchmark against a simple model — complexity is only justified if it beats the baseline
-- **Prophet vs XGBoost:** Prophet is easier to interpret and handles trend changes automatically; XGBoost is more accurate when you invest in feature engineering
+- **Market efficiency is real.** On GBM data, F1 = 0.33 = random baseline. This validates the evaluation, not failure.
+- **Time-aware splits are non-negotiable.** Random splits cause data leakage in time series — always split by date.
+- **Class imbalance matters.** Without balanced sample weights, the model collapses to always predicting "Flat".
+- **Technical indicators are features, not signals.** The real edge comes from alternative data: sentiment, options flow, earnings surprises.
 
 ---
 
 ## Tech Stack
 
-Python · Pandas · NumPy · Scikit-learn · XGBoost · Prophet · FastAPI · Matplotlib · Joblib
+Python · Pandas · NumPy · Scikit-learn · XGBoost · FastAPI · Matplotlib · vaderSentiment · Joblib
 
 ---
 
